@@ -1,98 +1,85 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# orders-api
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+Concise overview of this project.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## What this is
+A NestJS Orders service implementing:
+- Draft → Confirm → Close lifecycle for orders
+- Idempotent POST for draft creation (Redis-backed)
+- Optimistic locking via version/If-Match
+- Outbox pattern (Outbox table) written in the same DB transaction as Order changes
+- Event publishing (EventPublisherService) that reads outbox or publishes after commit
+- Guards
 
-## Description
+## Key folders / files
+- src/app.module.ts — root module, global providers (APP_INTERCEPTOR), TypeORM config
+- src/main.ts — Nest bootstrap (avoid duplicate global interceptor here)
+- src/modules/orders/
+  - orders.module.ts
+  - orders.controller.ts
+  - services/orders.service.ts — transactional logic, idempotency usage, outbox writes
+  - services/idempotency.service.ts — Redis idempotency helpers
+  - entities/order.entity.ts
+  - entities/outbox.entity.ts
+  - events/event-publisher.service.ts — publish events (do not write outbox)
+- src/common/interceptor/logging.interceptor.ts — request logging (register once via APP_INTERCEPTOR)
+- test/integration/orders.integration.spec.ts — integration tests (Testcontainers or alternatives)
+- jest.integration.config.js — integration jest config
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+## Design notes
+- Outbox writes must occur inside the same DB transaction that mutates Order (done in OrdersService). EventPublisher only publishes after commit (or an outbox processor reads DB).
+- Idempotency: IdempotencyService stores (tenantId + key) → { status, response } in Redis. createDraftIdempotent returns stored response on replay; conflicts detected when body differs.
+- Optimistic locking: Orders have a version. confirmDraft validates version and throws Conflict on mismatch (map to 409).
+- Avoid duplicate logs: register LoggingInterceptor exactly once (prefer APP_INTERCEPTOR in AppModule). Remove @UseInterceptors at controller level and app.useGlobalInterceptors in main.ts.
 
-## Project setup
+## API (examples)
+- POST /api/v1/orders/draft
+  - Creates a draft. Idempotency supported via Idempotency-Key header (handled in controller/service).
+- PATCH /api/v1/orders/:id/confirm
+  - Uses If-Match header (order version) to confirm and bump version.
+- POST /api/v1/orders/:id/close
+  - Closes order inside transaction and writes an outbox row for `orders.closed`.
 
-```bash
-$ npm install
-```
+(See controllers for exact routes/payloads.)
 
-## Compile and run the project
+## Environment variables
+- DB: DB_HOST, DB_PORT, DB_USER, DB_PASS, DB_NAME
+- REDIS_HOST, REDIS_PORT
+- Other config in src/config/app.config.ts
 
-```bash
-# development
-$ npm run start
+## Run locally
+1. Install deps:
+   - npm install
+2. Dev:
+   - npm run start:dev
+3. Build:
+   - npm run build
+4. Tests:
+   - Unit: npm test
+   - Integration (requires Docker): npm run test:integration
 
-# watch mode
-$ npm run start:dev
+## Integration tests
+- test/integration uses Testcontainers (Postgres + Redis). Ensure Docker is running.
+- Script: `test:integration` uses jest.integration.config.js
+- If testcontainers package issues occur, either:
+  - install latest testcontainers, or
+  - fallback to in-memory replacements (not included).
 
-# production mode
-$ npm run start:prod
-```
+## Common troubleshooting
+- Cannot find module '@nestjs/typeorm' → npm i @nestjs/typeorm typeorm reflect-metadata
+- testcontainers typings issues → npm i -D testcontainers; add test/types/testcontainers.d.ts with `declare module 'testcontainers';` if needed
+- Duplicate logging entries → remove duplicates (controller @UseInterceptors / main.ts app.useGlobalInterceptors) and keep APP_INTERCEPTOR provider in AppModule.
 
-## Run tests
+## Useful commands
+- Install: npm install
+- Start dev: npm run start:dev
+- Run integration tests: npm run test:integration
+- Restart TS server in VS Code: Ctrl+Shift+P → "TypeScript: Restart TS Server"
 
-```bash
-# unit tests
-$ npm run test
+## Where to add outbox writes
+- Always write outbox rows inside the same TypeORM transaction in OrdersService methods that mutate orders (createDraft, confirmDraft, closeOrder). Do not write outbox from EventPublisher.
 
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
-```
-
-## Deployment
-
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
-
-```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
-```
-
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+## Contacts / next steps
+- If you want, I can:
+  - Add the integration test file to test/integration/ (already prepared)
+  - Add README badges or CI config for running integration tests in CI (requires Docker)
